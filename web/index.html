@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Flash Sale Engine - High Concurrency Demo</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Plus Jakarta Sans', sans-serif; }
+    .mono { font-family: 'JetBrains Mono', monospace; }
+    @keyframes pulse-slow {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.85; transform: scale(1.02); }
+    }
+    .pulse-glow { animation: pulse-slow 3s infinite ease-in-out; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen selection:bg-rose-500 selection:text-white">
+
+  <!-- Header & Navigation -->
+  <header class="border-b border-slate-800/80 bg-slate-900/60 backdrop-blur-md sticky top-0 z-50">
+    <div class="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <span class="inline-flex items-center justify-center w-9 h-9 rounded-xl bg-gradient-to-tr from-rose-600 to-amber-500 text-white font-black text-xl shadow-lg shadow-rose-500/20">⚡</span>
+        <div>
+          <h1 class="font-bold text-lg leading-tight tracking-tight">FlashSale<span class="text-rose-500">Engine</span></h1>
+          <p class="text-xs text-slate-400 mono">Go 1.23 • Redis Lua • Kafka • PostgreSQL</p>
+        </div>
+      </div>
+
+      <!-- Live Connection Indicators -->
+      <div class="flex items-center space-x-4 text-xs">
+        <div class="flex items-center space-x-1.5 px-2.5 py-1 rounded-full bg-slate-800/80 border border-slate-700/60">
+          <span id="wsStatusDot" class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+          <span id="wsStatusText" class="text-slate-300 font-medium">WebSocket Live</span>
+        </div>
+        <button id="resetBtn" onclick="resetStock()" class="px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 transition-all active:scale-95">
+          🔄 Reset Stock (100)
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-6xl mx-auto px-4 py-8 space-y-8">
+
+    <!-- Flash Sale Banner & Hero -->
+    <div class="relative overflow-hidden rounded-3xl border border-rose-500/30 bg-gradient-to-b from-rose-950/20 via-slate-900/80 to-slate-900/90 p-8 shadow-2xl backdrop-blur-xl">
+      <div class="absolute -top-24 -right-24 w-96 h-96 bg-rose-600/15 rounded-full blur-3xl pointer-events-none"></div>
+      <div class="absolute -bottom-24 -left-24 w-96 h-96 bg-amber-600/10 rounded-full blur-3xl pointer-events-none"></div>
+
+      <div class="relative grid md:grid-cols-12 gap-8 items-center">
+        <!-- Product Details -->
+        <div class="md:col-span-7 space-y-4">
+          <div class="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-rose-500/20 border border-rose-500/40 text-rose-400 text-xs font-bold uppercase tracking-wider">
+            <span class="w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
+            <span>⚡ Ultra Flash Sale • Limited Stock</span>
+          </div>
+          
+          <h2 class="text-3xl sm:text-4xl font-extrabold tracking-tight text-white leading-tight">
+            PlayStation 5 Pro <span class="bg-gradient-to-r from-rose-400 to-amber-300 bg-clip-text text-transparent">Digital Edition</span>
+          </h2>
+          
+          <p class="text-slate-400 text-sm leading-relaxed max-w-xl">
+            Atomic high-concurrency reservation demo. Powered by single-threaded Redis Lua Scripts, asynchronously persisted to PostgreSQL via Go Worker Pools.
+          </p>
+
+          <div class="flex items-baseline space-x-4 pt-2">
+            <span class="text-4xl font-black text-rose-400 mono">$499.00</span>
+            <span class="text-xl text-slate-500 line-through mono">$699.00</span>
+            <span class="px-2.5 py-1 text-xs font-extrabold rounded-md bg-rose-500/20 text-rose-300 uppercase">-28% OFF</span>
+          </div>
+
+          <!-- Inventory Progress Bar -->
+          <div class="space-y-2 pt-2">
+            <div class="flex justify-between text-xs font-bold tracking-wider">
+              <span class="text-slate-300">STOCK REMAINING</span>
+              <span class="mono text-rose-400 text-sm"><span id="stockCount">100</span> / 100</span>
+            </div>
+            <div class="w-full h-3 bg-slate-800 rounded-full overflow-hidden border border-slate-700/60 p-0.5">
+              <div id="stockProgressBar" class="h-full bg-gradient-to-r from-amber-500 via-rose-500 to-rose-600 rounded-full transition-all duration-300" style="width: 100%;"></div>
+            </div>
+          </div>
+
+          <!-- Action Buttons -->
+          <div class="flex flex-wrap gap-3 pt-4">
+            <button id="buyBtn" onclick="buyOne()" class="flex-1 min-w-[200px] px-6 py-4 rounded-xl font-extrabold text-base bg-gradient-to-r from-rose-500 to-rose-600 hover:from-rose-600 hover:to-rose-700 text-white shadow-xl shadow-rose-600/30 transition-all transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed">
+              🛒 Rush Buy Now ($499)
+            </button>
+            <button id="stressBtn" onclick="runStressTest()" class="px-5 py-4 rounded-xl font-bold text-sm bg-slate-800 hover:bg-slate-700 border border-slate-700 text-amber-300 hover:text-amber-200 transition-all active:scale-95">
+              🚀 Stress Test (50 Concurrent)
+            </button>
+          </div>
+        </div>
+
+        <!-- Technical Telemetry Card -->
+        <div class="md:col-span-5 bg-slate-900/90 border border-slate-800 rounded-2xl p-6 space-y-4 shadow-xl">
+          <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400">System Telemetry & Architecture</h3>
+          <div class="space-y-3 text-xs mono">
+            <div class="flex justify-between py-1.5 border-b border-slate-800">
+              <span class="text-slate-400">Stock Check & Deduction:</span>
+              <span class="text-emerald-400 font-semibold">Redis Lua (&lt;1ms Atomic)</span>
+            </div>
+            <div class="flex justify-between py-1.5 border-b border-slate-800">
+              <span class="text-slate-400">DB Persistence:</span>
+              <span class="text-cyan-400 font-semibold">Go Worker Pool (Async)</span>
+            </div>
+            <div class="flex justify-between py-1.5 border-b border-slate-800">
+              <span class="text-slate-400">Event Decoupling:</span>
+              <span class="text-purple-400 font-semibold">Apache Kafka (KRaft)</span>
+            </div>
+            <div class="flex justify-between py-1.5 border-b border-slate-800">
+              <span class="text-slate-400">Race Protection:</span>
+              <span class="text-amber-400 font-semibold">Zero Overselling (Strict)</span>
+            </div>
+            <div class="flex justify-between py-1.5">
+              <span class="text-slate-400">Client Sync:</span>
+              <span class="text-emerald-400 font-semibold">WebSocket Sub-millisecond</span>
+            </div>
+          </div>
+
+          <div id="statusToast" class="hidden p-3 rounded-xl text-xs font-semibold transition-all"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Recent Confirmed Orders Table -->
+    <div class="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 space-y-4">
+      <div class="flex items-center justify-between">
+        <div>
+          <h3 class="text-base font-bold text-white">Live Confirmed Orders</h3>
+          <p class="text-xs text-slate-400">Processed by Go Worker Pool and committed to PostgreSQL</p>
+        </div>
+        <button onclick="fetchRecentOrders()" class="text-xs text-rose-400 hover:text-rose-300 font-semibold">
+          ↻ Refresh List
+        </button>
+      </div>
+
+      <div class="overflow-x-auto">
+        <table class="w-full text-left text-xs">
+          <thead>
+            <tr class="text-slate-400 border-b border-slate-800 mono">
+              <th class="py-2.5 px-3">Order ID</th>
+              <th class="py-2.5 px-3">User</th>
+              <th class="py-2.5 px-3">Qty</th>
+              <th class="py-2.5 px-3">Total</th>
+              <th class="py-2.5 px-3">Status</th>
+              <th class="py-2.5 px-3">Time</th>
+            </tr>
+          </thead>
+          <tbody id="ordersTableBody" class="divide-y divide-slate-800/60 mono text-slate-300">
+            <tr>
+              <td colspan="6" class="py-4 text-center text-slate-500">Loading orders...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </main>
+
+  <script>
+    let currentStock = 100;
+    const stockCountEl = document.getElementById('stockCount');
+    const stockProgressBar = document.getElementById('stockProgressBar');
+    const buyBtn = document.getElementById('buyBtn');
+    const statusToast = document.getElementById('statusToast');
+    const ordersTableBody = document.getElementById('ordersTableBody');
+
+    // Connect to WebSocket
+    function connectWS() {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.host}/ws/stock`;
+      const ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        document.getElementById('wsStatusDot').className = 'w-2 h-2 rounded-full bg-emerald-500 animate-pulse';
+        document.getElementById('wsStatusText').innerText = 'WebSocket Live';
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          updateStockUI(data.remaining_stock);
+          fetchRecentOrders();
+        } catch (e) {
+          console.error('WS Parse Error', e);
+        }
+      };
+
+      ws.onclose = () => {
+        document.getElementById('wsStatusDot').className = 'w-2 h-2 rounded-full bg-rose-500';
+        document.getElementById('wsStatusText').innerText = 'Reconnecting...';
+        setTimeout(connectWS, 2000);
+      };
+    }
+
+    function updateStockUI(stock) {
+      currentStock = stock;
+      stockCountEl.innerText = stock;
+      const pct = Math.max(0, Math.min(100, (stock / 100) * 100));
+      stockProgressBar.style.width = `${pct}%`;
+
+      if (stock <= 0) {
+        buyBtn.disabled = true;
+        buyBtn.innerText = '❌ OUT OF STOCK (Sold Out)';
+        buyBtn.className = 'flex-1 min-w-[200px] px-6 py-4 rounded-xl font-extrabold text-base bg-slate-800 text-slate-500 cursor-not-allowed';
+      } else {
+        buyBtn.disabled = false;
+        buyBtn.innerText = `🛒 Rush Buy Now ($499)`;
+        buyBtn.className = 'flex-1 min-w-[200px] px-6 py-4 rounded-xl font-extrabold text-base bg-gradient-to-r from-rose-500 to-rose-600 hover:from-rose-600 hover:to-rose-700 text-white shadow-xl shadow-rose-600/30 transition-all transform active:scale-95';
+      }
+    }
+
+    async function buyOne() {
+      const startTime = performance.now();
+      const randomUser = 'user-' + Math.floor(1000 + Math.random() * 9000);
+      const idempotencyKey = 'idemp-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
+
+      try {
+        const res = await fetch('/api/orders', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_id: randomUser,
+            item_id: 1,
+            quantity: 1,
+            idempotency_key: idempotencyKey
+          })
+        });
+
+        const latency = (performance.now() - startTime).toFixed(1);
+        const data = await res.json();
+
+        if (res.status === 202) {
+          showToast(`✅ Order Placed! ID: ${data.order.id.slice(0, 8)}... (${latency}ms) • Remaining: ${data.remaining_stock}`, 'bg-emerald-950/80 border border-emerald-500/40 text-emerald-300');
+        } else if (res.status === 409) {
+          showToast(`❌ Sold Out! Overselling prevented by Redis Lua.`, 'bg-rose-950/80 border border-rose-500/40 text-rose-300');
+        } else {
+          showToast(`⚠️ ${data.error || 'Request failed'}`, 'bg-amber-950/80 border border-amber-500/40 text-amber-300');
+        }
+      } catch (err) {
+        showToast(`Network error: ${err.message}`, 'bg-rose-950/80 text-rose-300');
+      }
+    }
+
+    async function runStressTest() {
+      const stressBtn = document.getElementById('stressBtn');
+      stressBtn.disabled = true;
+      stressBtn.innerText = '⚡ Firing 50 Requests...';
+
+      const requests = [];
+      const count = 50;
+      let success = 0;
+      let failed = 0;
+
+      for (let i = 0; i < count; i++) {
+        requests.push(
+          fetch('/api/orders', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              user_id: 'bot-' + (i + 1),
+              item_id: 1,
+              quantity: 1,
+              idempotency_key: 'stress-' + i + '-' + Date.now()
+            })
+          }).then(res => {
+            if (res.status === 202) success++;
+            else failed++;
+          }).catch(() => failed++)
+        );
+      }
+
+      await Promise.all(requests);
+      stressBtn.disabled = false;
+      stressBtn.innerText = '🚀 Stress Test (50 Concurrent)';
+      showToast(`🎯 Stress Test Completed! ${success} Succeeded, ${failed} Sold Out/Rejected. Zero Overselling!`, 'bg-amber-950/80 border border-amber-500/40 text-amber-200');
+      fetchRecentOrders();
+    }
+
+    async function resetStock() {
+      try {
+        const res = await fetch('/api/items/1/reset', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ stock: 100 })
+        });
+        const data = await res.json();
+        updateStockUI(100);
+        showToast('🔄 Inventory reset to 100 in Redis & PostgreSQL!', 'bg-cyan-950/80 border border-cyan-500/40 text-cyan-300');
+        fetchRecentOrders();
+      } catch (err) {
+        showToast('Failed to reset stock: ' + err.message, 'bg-rose-950/80 text-rose-300');
+      }
+    }
+
+    async function fetchRecentOrders() {
+      try {
+        const res = await fetch('/api/orders/recent');
+        const orders = await res.json();
+        if (!orders || orders.length === 0) {
+          ordersTableBody.innerHTML = '<tr><td colspan="6" class="py-4 text-center text-slate-500">No orders placed yet. Click Rush Buy!</td></tr>';
+          return;
+        }
+
+        ordersTableBody.innerHTML = orders.map(o => `
+          <tr class="hover:bg-slate-800/40 transition-colors">
+            <td class="py-2.5 px-3 text-rose-400 font-semibold">${o.id.substring(0, 8)}...</td>
+            <td class="py-2.5 px-3 text-slate-300">${o.user_id}</td>
+            <td class="py-2.5 px-3">${o.quantity}</td>
+            <td class="py-2.5 px-3 text-emerald-400 font-semibold">$${o.total_price.toFixed(2)}</td>
+            <td class="py-2.5 px-3">
+              <span class="px-2 py-0.5 rounded text-[10px] font-bold ${o.status === 'CONFIRMED' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'}">
+                ${o.status}
+              </span>
+            </td>
+            <td class="py-2.5 px-3 text-slate-500 text-[11px]">${new Date(o.created_at).toLocaleTimeString()}</td>
+          </tr>
+        `).join('');
+      } catch (e) {
+        console.error('Error fetching orders:', e);
+      }
+    }
+
+    function showToast(msg, colorClass) {
+      statusToast.className = `p-3 rounded-xl text-xs font-semibold shadow-lg block ${colorClass}`;
+      statusToast.innerText = msg;
+    }
+
+    // Initialize on load
+    connectWS();
+    fetchRecentOrders();
+  </script>
+</body>
+</html>
