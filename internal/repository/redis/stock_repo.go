@@ -42,22 +42,42 @@ func (r *stockCacheRepo) GetStock(ctx context.Context, itemID int64) (int, error
 	return stock, nil
 }
 
-// DeductStockAtomic executes the Lua script atomically in Redis.
+// DeductStockAtomic executes the unified Lua script atomically in Redis.
+// Checks idempotency key (if provided) and deducts stock in a single microsecond operation.
 // Returns: (success, remainingStock, error)
-func (r *stockCacheRepo) DeductStockAtomic(ctx context.Context, itemID int64, quantity int) (bool, int, error) {
+func (r *stockCacheRepo) DeductStockAtomic(
+	ctx context.Context,
+	itemID int64,
+	quantity int,
+	idempotencyKey string,
+	idempTTL time.Duration,
+) (bool, int, error) {
 	if quantity <= 0 {
 		return false, 0, domain.ErrInvalidQuantity
 	}
 
-	keys := []string{stockKey(itemID)}
-	args := []interface{}{quantity}
+	stockK := stockKey(itemID)
+	idempK := "idemp:none"
+	useIdemp := "0"
+	ttlSec := 0
+
+	if idempotencyKey != "" {
+		idempK = "idemp:" + idempotencyKey
+		useIdemp = "1"
+		ttlSec = int(idempTTL.Seconds())
+		if ttlSec <= 0 {
+			ttlSec = 86400
+		}
+	}
+
+	keys := []string{stockK, idempK}
+	args := []interface{}{quantity, ttlSec, useIdemp}
 
 	res, err := r.client.Eval(ctx, DeductStockLuaScript, keys, args...).Result()
 	if err != nil {
 		return false, 0, fmt.Errorf("failed to evaluate lua script: %w", err)
 	}
 
-	// Lua returns an array: {status, remaining_stock}
 	results, ok := res.([]interface{})
 	if !ok || len(results) < 2 {
 		return false, 0, fmt.Errorf("unexpected lua response format: %v", res)
@@ -77,6 +97,9 @@ func (r *stockCacheRepo) DeductStockAtomic(ctx context.Context, itemID int64, qu
 	case 1:
 		// Deducted successfully
 		return true, int(remainingStock), nil
+	case 2:
+		// Duplicate request (idempotency key already exists)
+		return false, 0, domain.ErrDuplicateOrder
 	case 0:
 		// Out of stock
 		return false, int(remainingStock), domain.ErrOutOfStock
@@ -88,7 +111,28 @@ func (r *stockCacheRepo) DeductStockAtomic(ctx context.Context, itemID int64, qu
 	}
 }
 
+// RollbackStock restores deducted stock in Redis and deletes the idempotency key if enqueuing fails
+func (r *stockCacheRepo) RollbackStock(
+	ctx context.Context,
+	itemID int64,
+	quantity int,
+	idempotencyKey string,
+) error {
+	stockK := stockKey(itemID)
+	idempK := "idemp:none"
+	useIdemp := "0"
+
+	if idempotencyKey != "" {
+		idempK = "idemp:" + idempotencyKey
+		useIdemp = "1"
+	}
+
+	keys := []string{stockK, idempK}
+	args := []interface{}{quantity, useIdemp}
+
+	return r.client.Eval(ctx, RollbackStockLuaScript, keys, args...).Err()
+}
+
 func (r *stockCacheRepo) SetIdempotencyNX(ctx context.Context, key string, ttl time.Duration) (bool, error) {
 	return r.client.SetNX(ctx, "idemp:"+key, "1", ttl).Result()
 }
-

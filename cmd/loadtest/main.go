@@ -32,11 +32,11 @@ type Result struct {
 func main() {
 	cfg := Config{
 		BaseURL:        "http://127.0.0.1:8080",
-		TotalUsers:     10000,
-		Concurrency:    1000,
-		InitialStock:   100,
-		HumanJitterMax: 10 * time.Millisecond,
-		DoubleClickPct: 0.05, // 5% accidental double clicks
+		TotalUsers:     60000,
+		Concurrency:    1500,
+		InitialStock:   3000,
+		HumanJitterMax: 5 * time.Millisecond,
+		DoubleClickPct: 0.10, // 5% accidental double clicks
 	}
 
 	fmt.Println("=================================================================")

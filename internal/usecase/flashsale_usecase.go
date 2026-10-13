@@ -41,51 +41,46 @@ func (u *flashSaleUsecase) PlaceOrder(ctx context.Context, req *domain.CreateOrd
 		return nil, 0, domain.ErrInvalidQuantity
 	}
 
-	// 1. Check idempotency in Redis (microsecond lock to prevent concurrent double-clicks)
-	if req.IdempotencyKey != "" {
-		acquired, err := u.stockCacheRepo.SetIdempotencyNX(ctx, req.IdempotencyKey, 24*time.Hour)
-		if err == nil && !acquired {
+	// 1. Unified Atomic Execution in Redis (<1ms):
+	// Performs Idempotency validation + Stock deduction in a single Lua operation.
+	// Eliminates redundant round-trips and removes PostgreSQL query from the hot path completely.
+	success, remainingStock, err := u.stockCacheRepo.DeductStockAtomic(ctx, req.ItemID, req.Quantity, req.IdempotencyKey, 24*time.Hour)
+	if err != nil {
+		if err == domain.ErrDuplicateOrder {
 			return nil, 0, domain.ErrDuplicateOrder
 		}
-		if u.orderRepo != nil {
-			existingOrder, err := u.orderRepo.GetByIdempotencyKey(ctx, req.IdempotencyKey)
-			if err == nil && existingOrder != nil {
-				return existingOrder, 0, nil
-			}
+		if err == domain.ErrOutOfStock {
+			return nil, remainingStock, domain.ErrOutOfStock
 		}
-	}
-
-	// 2. Atomic Stock Deduction in Redis via Lua Script (<1ms)
-	success, remainingStock, err := u.stockCacheRepo.DeductStockAtomic(ctx, req.ItemID, req.Quantity)
-	if err != nil {
 		return nil, 0, err
 	}
 	if !success {
 		return nil, remainingStock, domain.ErrOutOfStock
 	}
 
-	// 3. Build Order Object
+	// 2. Build Order Object
 	orderID := uuid.New().String()
 	order := &domain.Order{
 		ID:             orderID,
 		UserID:         req.UserID,
 		ItemID:         req.ItemID,
 		Quantity:       req.Quantity,
-		TotalPrice:     float64(req.Quantity) * 499.00, // Default price or fetch from itemRepo
+		TotalPrice:     float64(req.Quantity) * 499.00,
 		Status:         domain.OrderStatusPending,
 		IdempotencyKey: req.IdempotencyKey,
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
 	}
 
-	// 4. Asynchronous Handoff: Push order to worker pool channel (non-blocking if buffered)
+	// 3. Asynchronous Handoff: Push order to worker pool channel (non-blocking if buffered)
 	if u.orderQueue != nil {
 		select {
 		case u.orderQueue <- order:
 			// Enqueued successfully
 		default:
-			// If buffer is completely saturated, could log or fallback
-			return nil, remainingStock, fmt.Errorf("order queue is currently saturated")
+			// Buffer saturated! Roll back Redis stock and idempotency key to prevent phantom inventory loss
+			_ = u.stockCacheRepo.RollbackStock(ctx, req.ItemID, req.Quantity, req.IdempotencyKey)
+			return nil, remainingStock + req.Quantity, fmt.Errorf("order queue is currently saturated")
 		}
 	}
 

@@ -67,7 +67,7 @@ func main() {
 	// 2. Connect to Redis (High-concurrency pool tuning for 10k requests)
 	rdb := redisclient.NewClient(&redisclient.Options{
 		Addr:         redisAddr,
-		PoolSize:     1000,
+		PoolSize:     1500,
 		MinIdleConns: 100,
 		PoolTimeout:  5 * time.Second,
 	})
@@ -96,8 +96,8 @@ func main() {
 	notificationConsumer.Start(consumerCtx)
 
 	// 4. Initialize Go Worker Pool (Goroutines & Buffered Channel)
-	orderQueue := make(chan *domain.Order, 1000)
-	workerPool := worker.NewOrderWorkerPool(10, orderQueue, orderRepo, eventProducer)
+	orderQueue := make(chan *domain.Order, 5000)
+	workerPool := worker.NewOrderWorkerPool(20, orderQueue, orderRepo, eventProducer)
 	workerPool.Start()
 
 	// 5. Initialize WebSocket Hub
@@ -110,12 +110,16 @@ func main() {
 
 	// Attach Redis-backed Rate Limiter (Anti-Bot: 20 reqs/sec per IP)
 	if rdb != nil {
-		rl := httpdeliverymiddleware.NewRateLimiterMiddleware(rdb, httpdeliverymiddleware.RateLimiterConfig{
-			Limit:  20,
-			Window: 1 * time.Second,
-		})
-		handler.SetRateLimiter(rl)
-		log.Println("🛡️ Anti-Bot Rate Limiter enabled (Limit: 20 reqs/sec)")
+		if os.Getenv("DISABLE_RATE_LIMIT") == "true" {
+			log.Println("⚠️ Anti-Bot Rate Limiter is DISABLED (DISABLE_RATE_LIMIT=true)")
+		} else {
+			rl := httpdeliverymiddleware.NewRateLimiterMiddleware(rdb, httpdeliverymiddleware.RateLimiterConfig{
+				Limit:  20,
+				Window: 1 * time.Second,
+			})
+			handler.SetRateLimiter(rl)
+			log.Println("🛡️ Anti-Bot Rate Limiter enabled (Limit: 20 reqs/sec)")
+		}
 	}
 
 	server := &http.Server{

@@ -65,6 +65,7 @@ func (h *WSHub) Run() {
 
 			h.mu.Lock()
 			for conn := range h.clients {
+				_ = conn.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
 				err := conn.WriteMessage(websocket.TextMessage, payload)
 				if err != nil {
 					conn.Close()
@@ -76,11 +77,16 @@ func (h *WSHub) Run() {
 	}
 }
 
+// BroadcastStock sends stock updates non-blockingly so slow WS consumers never stall the order checkout path
 func (h *WSHub) BroadcastStock(itemID int64, remainingStock int) {
-	h.broadcast <- StockUpdateMessage{
+	select {
+	case h.broadcast <- StockUpdateMessage{
 		ItemID:         itemID,
 		RemainingStock: remainingStock,
 		Timestamp:      time.Now(),
+	}:
+	default:
+		// Non-blocking: Drop frame if broadcast channel is saturated
 	}
 }
 
@@ -93,7 +99,8 @@ func (h *WSHub) HandleWS(w http.ResponseWriter, r *http.Request, initialStock in
 
 	h.register <- conn
 
-	// Send initial stock snapshot immediately
+	// Send initial stock snapshot immediately with write deadline
+	_ = conn.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
 	initialMsg, _ := json.Marshal(StockUpdateMessage{
 		ItemID:         itemID,
 		RemainingStock: initialStock,
